@@ -65,5 +65,7 @@ testing and benchmarking strategy.
 
 ## License
 
-Undecided — scaffold defaults to `MIT OR Apache-2.0` in crate manifests.
-Recorded as an open question in `docs/adr/0006-license-and-name.md`.
+Elastic License 2.0 — see `LICENSE`. Decided 2026-10-24 in
+`docs/adr/0006-license-and-name.md`: source-available, so the runtime
+stays public and studyable while nobody may resell it as a hosted
+service.

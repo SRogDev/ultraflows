@@ -26,4 +26,5 @@
 - Phase 1A implementation (only on Roger's go): minimal durable slice
   against in-memory/SQLite store, fault-injection harness.
 - Phase 1B: server + Postgres + minimal worker protocol.
-- Open: final name and license (ADR-0006).
+- First publication (2026-10-24): public on GitHub as SRogDev/ultraflows
+  under the Elastic License 2.0 — ADR-0006 decided (license + name).
