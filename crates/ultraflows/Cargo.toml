@@ -1,0 +1,19 @@
+[package]
+name = "ultraflows"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "UltraFlows — public API and async runtime: define durable workflows in Rust, schedule, retry, wait and recover them."
+
+[dependencies]
+ultraflows-core = { path = "../ultraflows-core" }
+ultraflows-store = { path = "../ultraflows-store" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true

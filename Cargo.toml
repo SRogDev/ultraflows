@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ultraflows-core",
+    "crates/ultraflows-store",
+    "crates/ultraflows",
+    "crates/ultraflows-server",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+repository = ""
+description = "UltraFlows — a native Rust durable workflow runtime (temporary name)"
+
+# Deliberate stack for Phase 1. Every entry here earns its place in docs/adr/
+# (0003 storage, 0005 stack). Do NOT add dependencies speculatively: a new
+# dependency needs a problem it solves, noted in the PR/commit that adds it.
+[workspace.dependencies]
+# Async runtime — used ONLY by the scheduler/runtime crates, never by core.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+# Serialization of step inputs/outputs and persisted payloads.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Typed library errors. (No anyhow in library crates: callers must be able
+# to match on error kinds. anyhow may appear in examples/binaries only.)
+thiserror = "2"
+# Observability: structured spans/events, OpenTelemetry-compatible model.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Run / step / attempt identifiers. v7 = time-ordered UUIDs.
+uuid = { version = "1", features = ["v7", "serde"] }
+# Timestamps for persisted state (wake times, schedules). IANA/DST handling
+# for cron arrives in Phase 2 with its own ADR, not before.
+chrono = { version = "0.4", features = ["serde"] }
+# Storage driver: async, behind the Store trait (ADR-0003, decision C).
+# PostgreSQL is the real backend (service mode); SQLite serves tests and
+# zero-infra local development; an in-memory backend serves unit tests.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+    "sqlite",
+    "chrono",
+    "uuid",
+    "json",
+] }
+# Property-based testing (dev only): invariants over the state machine.
+proptest = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
