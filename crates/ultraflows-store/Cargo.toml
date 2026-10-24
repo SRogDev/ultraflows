@@ -1,0 +1,18 @@
+[package]
+name = "ultraflows-store"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "UltraFlows storage: the Store trait and its backends (SQLite in Phase 1; Postgres in Phase 3 service mode)."
+
+[dependencies]
+ultraflows-core = { path = "../ultraflows-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
