@@ -9,9 +9,9 @@ members = [
 
 [workspace.package]
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "Elastic-2.0"
 rust-version = "1.85"
-repository = ""
+repository = "https://github.com/SRogDev/ultraflows"
 description = "UltraFlows — a native Rust durable workflow runtime (temporary name)"
 
 # Deliberate stack for Phase 1. Every entry here earns its place in docs/adr/

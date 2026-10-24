@@ -20,5 +20,7 @@
   before a commit. New dependencies need a stated problem (ADR-0005).
 - **Docs:** every significant change ships a README touch-up in the same
   change; update `STATUS.md` when a milestone completes.
-- **Git:** local-only while the owner's GitHub account is suspended —
-  zero GitHub calls. Local branches per logical change become PRs later.
+- **Git:** the owner's GitHub account was restored 2026-10-24; the repo
+  is public at SRogDev/ultraflows. Push at human pace (owner's strategy:
+  PRs for big changes, direct pushes for minor ones — never automated
+  bursts; a burst is what caused the 2026-10-16 suspension).
