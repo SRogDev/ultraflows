@@ -45,9 +45,10 @@ crates/
   ultraflows/         runtime library: workflow/activity API + Tokio scheduler
   ultraflows-server/  the service binary (API + scheduler + worker gateway)
 docs/adr/             architecture decision records
-examples/             runnable demos (arrive with Phase 1)
-benches/              benchmark harness (arrives when there is something to measure)
 ```
+
+Runnable examples arrive with Phase 1 and a benchmark harness when
+there is something real to measure — neither exists yet.
 
 ## Development
 
