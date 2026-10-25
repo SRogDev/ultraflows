@@ -15,5 +15,6 @@ pub mod types;
 
 pub use error::CoreError;
 pub use retry::RetryPolicy;
+pub use schedule::next_fire;
 pub use state::{can_transition, check_transition};
 pub use types::{NewRun, Run, RunEvent, RunId, RunStatus, StepRecord, WaitRecord, idempotency_key};

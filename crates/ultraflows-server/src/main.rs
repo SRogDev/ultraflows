@@ -1,23 +1,22 @@
 //! UltraFlows server — service-first (ADR-0002).
 //!
-//! One binary: HTTP API + scheduler + worker loop, over the `ultraflows`
-//! runtime and a SQLite store. Run it with:
+//! One binary: HTTP API + scheduler loop. The server schedules work
+//! and serves the worker protocol; it never runs task code itself —
+//! remote workers (see the `ultraflows-sdk` crate and
+//! `ultraflows-demo-app`) lease runs and execute them. Run it with:
 //!
 //! ```sh
 //! ULTRAFLOW_DB=ultraflows.db PORT=3000 cargo run --bin ultraflows-server
 //! ```
 //!
-//! Then see `scripts/demo.sh` for a full end-to-end demonstration,
-//! including a `kill -9` restart while a run waits on a human approval.
+//! Then see `scripts/trigger-demo.sh` for a full end-to-end
+//! demonstration, including a `kill -9` restart while a run waits on
+//! a human approval.
 
 mod api;
-mod workflows;
 
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
-use ultraflows::Executor;
-use ultraflows_core::RetryPolicy;
 use ultraflows_store::{SqliteStore, Store};
 
 #[tokio::main]
@@ -43,27 +42,32 @@ async fn main() {
     let store = SqliteStore::connect(&url).await.expect("open database");
     store.migrate().await.expect("migrate database");
 
-    let executor = Executor::new(store, workflows::registry(), RetryPolicy::default());
-    let state = Arc::new(api::AppState {
-        executor: executor.clone(),
-    });
-
-    // The worker loop: single worker in this binary (v0.1.0). Remote
-    // workers over a worker protocol are a later phase.
-    let worker = executor.clone();
+    // Scheduler loop: TTL expiry + cron schedule firing, every second.
+    // Timer waits need no waking here: a Waiting run whose wake time
+    // passed is directly leaseable by workers (see claim_specific).
+    let sched_store = store.clone();
     tokio::spawn(async move {
-        worker.drive(Duration::from_millis(100)).await;
+        loop {
+            match api::scheduler_tick(&sched_store).await {
+                Ok(fired) => {
+                    for id in fired {
+                        tracing::info!(run_id = %id, "schedule fired");
+                    }
+                }
+                Err(e) => tracing::error!("scheduler tick error: {e}"),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     });
 
-    let app = api::router(state);
+    let app = api::router(api::AppState { store });
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .expect("bind address");
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         port,
-        workflows = ?workflows::names(),
-        "ultraflows-server listening on 127.0.0.1 (local only, no auth in v0.1.0)"
+        "ultraflows-server listening on 127.0.0.1 (local only, no auth)"
     );
     axum::serve(listener, app)
         .with_graceful_shutdown(async {

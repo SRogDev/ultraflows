@@ -7,7 +7,6 @@ rust-version.workspace = true
 description = "UltraFlows server binary: API, scheduler and worker gateway in one process (roles split later only if a deployment needs it)."
 
 [dependencies]
-ultraflows = { path = "../ultraflows" }
 ultraflows-core = { path = "../ultraflows-core" }
 ultraflows-store = { path = "../ultraflows-store" }
 tokio.workspace = true
