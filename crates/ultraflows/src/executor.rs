@@ -51,6 +51,11 @@ pub struct Executor<S: Store> {
     store: S,
     workflows: Arc<HashMap<String, WorkflowFn<S>>>,
     retry: RetryPolicy,
+    /// Per-workflow retry overrides (from the task registry). Falls
+    /// back to `retry` when a workflow has no entry. The remote-worker
+    /// path retries server-side from the task definition instead; this
+    /// map is for the embedded (library) executor only.
+    policies: HashMap<String, RetryPolicy>,
 }
 
 impl<S: Store> Executor<S> {
@@ -59,6 +64,7 @@ impl<S: Store> Executor<S> {
             store,
             workflows: Arc::new(workflows),
             retry,
+            policies: HashMap::new(),
         }
     }
 
@@ -66,10 +72,41 @@ impl<S: Store> Executor<S> {
         &self.store
     }
 
+    /// Register a per-workflow retry policy override.
+    pub fn with_policy(mut self, workflow: impl Into<String>, policy: RetryPolicy) -> Self {
+        self.policies.insert(workflow.into(), policy);
+        self
+    }
+
+    fn policy_for(&self, workflow: &str) -> &RetryPolicy {
+        self.policies.get(workflow).unwrap_or(&self.retry)
+    }
+
     /// Claim one due run and execute it to a terminal-for-now state.
     /// Returns the run id when a run was claimed, None when idle.
     pub async fn run_once(&self) -> Result<Option<uuid::Uuid>, StoreError> {
         let now_ms = Utc::now().timestamp_millis();
+        // Promote PendingVersion runs whose task is now registered,
+        // so a run triggered before its task existed becomes runnable
+        // instead of sitting invisible forever.
+        if let Ok(pending) = self
+            .store
+            .list_runs_filtered(Some("PendingVersion"), None, None, None)
+            .await
+        {
+            for run in pending {
+                if self
+                    .store
+                    .get_task(&run.workflow)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    let _ = self.store.promote_pending_version(&run.workflow).await;
+                }
+            }
+        }
         let Some(run) = self.store.claim_due(now_ms).await? else {
             return Ok(None);
         };
@@ -96,7 +133,7 @@ impl<S: Store> Executor<S> {
             Err(FlowError::Suspended) => self.finalize_waiting(&run).await?,
             Err(FlowError::Cancelled) => self.finalize_cancelled(&run).await?,
             Err(FlowError::Failed(msg)) => {
-                if self.retry.exhausted(run.attempt) {
+                if self.policy_for(&run.workflow).exhausted(run.attempt) {
                     self.finalize_failed(&run, &msg).await?;
                 } else {
                     self.finalize_retry(&run, &msg).await?;
@@ -233,7 +270,7 @@ impl<S: Store> Executor<S> {
     async fn finalize_retry(&self, run: &Run, msg: &str) -> Result<(), StoreError> {
         let mut r = self.refresh(run).await?;
         if check_transition(r.status, RunStatus::Pending).is_ok() {
-            let delay = self.retry.delay_after(r.attempt);
+            let delay = self.policy_for(&r.workflow).delay_after(r.attempt);
             r.status = RunStatus::Pending;
             r.error = Some(msg.to_string());
             r.next_attempt_at =
@@ -284,6 +321,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_version_run_promotes_and_executes_once_task_registered() {
+        let store = SqliteStore::connect_memory().await.unwrap();
+        store.migrate().await.unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut workflows = HashMap::new();
+        workflows.insert("flaky-report".to_string(), flaky_workflow(counter.clone()));
+        let executor = Executor::new(store.clone(), workflows, RetryPolicy::default());
+        let run = store
+            .create_run(NewRun::new(
+                "flaky-report",
+                serde_json::json!({"fail_times": 0}),
+                5,
+            ))
+            .await
+            .unwrap();
+        // Simulate a run triggered before its task was registered.
+        let mut r = store.get_run(run.id).await.unwrap().unwrap();
+        r.status = RunStatus::PendingVersion;
+        store.update_run(&r).await.unwrap();
+        // Unregistered: run_once claims nothing.
+        assert!(executor.run_once().await.unwrap().is_none());
+        // Register the task: the next run_once promotes and executes it.
+        store
+            .upsert_task(&ultraflows_core::types::TaskDefinition {
+                id: "flaky-report".to_string(),
+                version_hash: "v1".to_string(),
+                retry: RetryPolicy::default(),
+                concurrency_total: None,
+                concurrency_per_key: None,
+                queue: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+        let final_run = executor
+            .run_until_terminal(run.id, Duration::from_secs(10))
+            .await
+            .expect("run should complete after registration");
+        assert_eq!(final_run.status, RunStatus::Completed);
+    }
+
+    #[tokio::test]
     async fn flaky_workflow_retries_then_completes_without_reexecuting_recorded_steps() {
         let store = SqliteStore::connect_memory().await.unwrap();
         store.migrate().await.unwrap();
@@ -292,11 +372,11 @@ mod tests {
         workflows.insert("flaky-report".to_string(), flaky_workflow(counter.clone()));
         let executor = Executor::new(store.clone(), workflows, RetryPolicy::default());
         let run = store
-            .create_run(NewRun {
-                workflow: "flaky-report".to_string(),
-                payload: serde_json::json!({"fail_times": 2}),
-                max_attempts: 5,
-            })
+            .create_run(NewRun::new(
+                "flaky-report",
+                serde_json::json!({"fail_times": 2}),
+                5,
+            ))
             .await
             .unwrap();
         store
@@ -336,11 +416,7 @@ mod tests {
         workflows.insert("approval-demo".to_string(), workflow);
         let executor = Executor::new(store.clone(), workflows, RetryPolicy::default());
         let run = store
-            .create_run(NewRun {
-                workflow: "approval-demo".to_string(),
-                payload: serde_json::json!({}),
-                max_attempts: 3,
-            })
+            .create_run(NewRun::new("approval-demo", serde_json::json!({}), 3))
             .await
             .unwrap();
         // First executor instance drives it to Waiting.
@@ -404,11 +480,7 @@ mod tests {
         workflows.insert("timer-demo".to_string(), workflow);
         let executor = Executor::new(store.clone(), workflows, RetryPolicy::default());
         let run = store
-            .create_run(NewRun {
-                workflow: "timer-demo".to_string(),
-                payload: serde_json::json!({}),
-                max_attempts: 3,
-            })
+            .create_run(NewRun::new("timer-demo", serde_json::json!({}), 3))
             .await
             .unwrap();
         // The executor keeps polling; the timer becomes due and the
