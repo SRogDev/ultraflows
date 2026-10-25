@@ -106,6 +106,9 @@ pub trait Store: Send + Sync + Clone + 'static {
         now_ms: i64,
     ) -> Result<Vec<Uuid>, StoreError>;
 
+    /// Record a worker heartbeat (upsert by worker id).
+    async fn touch_worker(&self, worker_id: &str, now_ms: i64) -> Result<(), StoreError>;
+
     // ---- Schedules ----
     async fn create_schedule(&self, schedule: &Schedule) -> Result<(), StoreError>;
     async fn upsert_schedule_by_dedup(&self, schedule: &Schedule) -> Result<Schedule, StoreError>;

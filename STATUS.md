@@ -16,10 +16,21 @@
   scaffold status. Stack resolved in Cargo.lock: tokio 1.54.1,
   sqlx 0.8.6, serde 1.0.229, chrono 0.4.45, uuid 1.26.1, proptest 1.11.0.
 
+## Done (Trigger-core, 2026-10-25)
+
+- Functional clone of Trigger.dev's CORE RUNTIME in Rust (runtime
+  only — no UI, deploy, billing, AI, checkpoints, ClickHouse/Redis).
+  REA map (`docs/TRIGGER_CORE_MAP.md`, 7 evidence files) + spec delta
+  + ADR-0009. Task registry, Trigger-shaped API, remote-worker lease
+  protocol, `ultraflows-sdk` (RemoteCtx + Worker), external demo app.
+  **25 tests pass** (core 9, store 9, runtime 4, server 3, SDK 0 +
+  demo script 18/18 proofs). `scripts/trigger-demo.sh` is canonical;
+  `scripts/demo.sh` forwards to it. v0.1.0 in-process workflows and
+  `POST /v1/runs` removed. Commits on local main only (no push).
+
 ## Doing
 
-- Phase 1A design sessions (mentored): core types, event history,
-  step journal contract, Store trait contract.
+- Final quality gates + report for the Trigger-core increment.
 
 ## Next
 

@@ -28,7 +28,9 @@
 //! No authentication in this release: bind localhost-only. The README
 //! says so. Do not expose this server to a network you do not trust.
 //!
-//! Idempotency TTL default: 30 days (Trigger's documented default),
+//! Idempotency TTL default: 30 days (an UltraFlows choice, taken from
+//! the docs recon; the REA map notes Trigger's code paths read did not
+//! establish a default — see docs/TRIGGER_CORE_MAP.md section 9.3),
 //! unless the trigger call passes `idempotencyTtlMs`.
 
 use axum::Router;

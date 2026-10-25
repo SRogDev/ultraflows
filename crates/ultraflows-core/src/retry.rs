@@ -75,8 +75,10 @@ mod tests {
 
     #[test]
     fn jitter_is_deterministic_and_bounded() {
-        let mut p = RetryPolicy::default();
-        p.randomize = true;
+        let p = RetryPolicy {
+            randomize: true,
+            ..Default::default()
+        };
         let d1 = p.delay_with_jitter(2, 42);
         let d2 = p.delay_with_jitter(2, 42);
         assert_eq!(d1, d2);

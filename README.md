@@ -13,55 +13,72 @@ result* is durable — the runtime never assumes it is deterministic.
 
 ## Status
 
-**v0.1.0 — working single-node demo runtime.** Trigger workflows over
-HTTP, journaled steps with replay, timer waits, human-approval
-waitpoints, retries with backoff, cancellation and an append-only event
-log — all on SQLite, with 11 tests and a `kill -9` restart demo. See
-"Limitations" below and `docs/adr/0008-portfolio-v010-scope.md` for
-exactly what is *not* implemented yet. Nothing here is claimed durable,
-reliable or fast beyond what the tests and the demo prove.
+**Trigger-core runtime — functional single-node clone of Trigger.dev's
+core runtime in Rust (2026-10-25).** External apps register tasks,
+trigger runs over HTTP, and work them as remote workers via the
+`ultraflows-sdk` crate: journaled steps with replay, timer /
+approval-token / child-run waits (`triggerAndWait`), retries from the
+task's policy, concurrency caps at claim time, cron schedules with
+IANA timezones, idempotent triggers, TTL + delay + reschedule, and an
+append-only event log — all on SQLite, with 25 tests and an 18-proof
+end-to-end demo (`scripts/trigger-demo.sh`, including `kill -9` +
+restart + resume without re-executing steps). See "Limitations" below
+and `docs/adr/0009-trigger-core-scope.md` for exactly what is *not*
+implemented yet. Nothing here is claimed durable, reliable or fast
+beyond what the tests and the demo prove. This is Trigger-*shaped*,
+not wire-compatible with Trigger.dev's hosted API.
 
 ## For recruiters (30 seconds)
 
-UltraFlows is a Temporal-shaped durable workflow runtime in Rust:
-workflow code is deterministic, side effects live in steps, and a run's
+UltraFlows is a Trigger-shaped durable workflow runtime in Rust:
+task code runs in remote workers, steps are journaled, and a run's
 event history lets it survive crashes and long waits. The demo proves
-the core claim end-to-end: start a run, kill the server with `kill -9`
-while it waits on a human approval, restart it, approve, and watch it
-complete — with earlier steps replayed from the journal, never
-re-executed.
+the core claim end-to-end: an external app registers tasks, triggers
+runs, one run waits on a human approval, the server is killed with
+`kill -9`, restarted, the approval completes, and the run finishes —
+with earlier steps replayed from the journal, never re-executed.
 
 ## Quickstart
 
 ```bash
-# Run the full demo (server, approval wait, kill -9, restart, retries, timer)
-bash scripts/demo.sh
+# Run the full demo: external registration, trigger, approval wait +
+# kill -9 + restart + resume, retry, timer, triggerAndWait, schedule,
+# idempotent re-trigger, batch trigger (18 proofs)
+bash scripts/trigger-demo.sh
 
-# Or run the server yourself
+# Or run the server yourself (localhost-only, no auth)
 ULTRAFLOW_DB=ultraflows.db PORT=3000 cargo run --bin ultraflows-server
 curl -s localhost:3000/health
-curl -s -X POST localhost:3000/v1/runs -H 'content-type: application/json' \
-  -d '{"workflow":"client-onboarding","payload":{"company":"Acme"}}'
-curl -s -X POST localhost:3000/v1/approvals/onboarding:Acme \
-  -H 'content-type: application/json' -d '{"result":{"approved":true}}'
+# In another terminal: register + work demo tasks, then trigger one
+ULTRAFLOWS_URL=http://127.0.0.1:3000 cargo run --bin ultraflows-demo-app -- worker &
+curl -s -X POST localhost:3000/v1/tasks/tick-task/trigger \
+  -H 'content-type: application/json' -d '{"payload":{}}'
 ```
 
-Workflows available in v0.1.0: `client-onboarding` (steps + approval
-wait), `flaky-report` (retries), `delayed-reminder` (timer wait).
-API: `POST /v1/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`,
-`GET /v1/runs/{id}/events`, `GET /v1/runs/{id}/steps`,
-`POST /v1/runs/{id}/cancel`, `POST /v1/approvals/{token}`.
+Demo tasks (in `ultraflows-demo-app`, not in the server): `onboarding`
+(parent + child), `charge-card`, `approval-flow`, `flaky-report`,
+`timer-task`, `tick-task`. API: `POST /v1/tasks/{id}/trigger`,
+`/batch-trigger`, `GET /v1/runs[?status&task&tag&from&to]`,
+`GET /v1/runs/{id}[/events|/steps|/waits/{key}]`,
+`POST /v1/runs/{id}/cancel|/replay|/reschedule`,
+`POST /v1/schedules`, `POST /v1/waitpoints/{token}/complete`,
+worker protocol under `/v1/workers/...`. Full surface:
+`docs/TRIGGER_CORE_SPEC_DELTA.md`.
 
-## Limitations (v0.1.0, stated plainly)
+## Limitations (stated plainly)
 
-- Single node, single in-process worker; SQLite only (PostgreSQL is a
-  trait away, not implemented yet).
-- No authentication — bind is localhost-only by default; do not expose
-  it to an untrusted network.
-- No schedules/cron, no remote workers, no multi-tenancy yet.
-- Crash recovery proven for Waiting/Pending runs; a run that is
-  Running at kill time needs lease expiry (next increment) to be
-  reclaimed automatically.
+- Single node; SQLite only (PostgreSQL is a trait away, not
+  implemented yet). Own protocol — NOT wire-compatible with
+  Trigger.dev's hosted API.
+- No authentication — bind is localhost-only; do not expose it to
+  an untrusted network.
+- No declarative (code-defined) schedules, no batch waitpoints, no
+  debounce, no gates, no webhooks, no checkpoints, no multi-tenancy.
+- Cron `L` syntax is rejected with a clear error (unsupported).
+- A never-completed token wait blocks forever unless cancelled
+  (waitpoint timeout semantics unestablished).
+- Remote `Running` runs are reclaimed via 30 s lease expiry; the
+  embedded executor has no lease expiry.
 - No performance claims: no benchmark has been run yet.
 
 ## Concepts (kept distinct on purpose)
@@ -87,14 +104,17 @@ API: `POST /v1/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`,
 ```text
 crates/
   ultraflows-core/    pure types, state machine, invariants (no Tokio, no I/O)
-  ultraflows-store/   Store trait + backends (Postgres real; SQLite/memory for tests)
-  ultraflows/         runtime library: workflow/activity API + Tokio scheduler
-  ultraflows-server/  the service binary (API + scheduler + worker gateway)
+  ultraflows-store/   Store trait + SQLite backend (Postgres: trait only)
+  ultraflows/         runtime library: embedded Ctx/Executor (kept for library use)
+  ultraflows-sdk/     Rust SDK: Client (trigger) + Worker + RemoteCtx (remote tasks)
+  ultraflows-demo-app/ external demo app (registers + triggers + works tasks)
+  ultraflows-server/  the service binary (Trigger-shaped API + scheduler loop)
 docs/adr/             architecture decision records
+docs/TRIGGER_CORE_MAP.md, docs/TRIGGER_CORE_SPEC_DELTA.md
 ```
 
-Runnable demos live in `scripts/demo.sh` and in the server's
-`workflows.rs`. A benchmark harness arrives when there is something
+Runnable demos live in `scripts/trigger-demo.sh` (`scripts/demo.sh`
+forwards to it). A benchmark harness arrives when there is something
 real to measure — no numbers are quoted before then.
 
 ## Development

@@ -79,3 +79,13 @@ Tracked in `docs/adr/`. ADR-0001…0005 and 0007 are **Accepted**
 (Roger's decisions, 2026-10-23). Still open: name + license
 (ADR-0006). Anything else unspecified defaults to Temporal's
 documented semantics (ADR-0007), recorded where used.
+
+## Trigger-core increment (DONE 2026-10-25, ADR-0009)
+
+Remote-worker runtime replacing the v0.1.0 in-process demo: task
+registry, Trigger-shaped API, lease protocol + Rust SDK, external
+demo app, cron schedules (DST-tested), idempotent triggers, TTL /
+delay / reschedule, concurrency caps at claim time. 25 tests +
+18-proof demo script green. Remaining Phase 1 work: Postgres backend,
+declarative schedules, batch waitpoints, webhook waiters (in that
+order of runtime value).

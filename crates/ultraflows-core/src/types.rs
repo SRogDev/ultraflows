@@ -202,18 +202,13 @@ pub struct Schedule {
 /// form): `run` scopes a key to one task, `global` scopes it to nothing
 /// (one key, one run, everywhere), `attempt` is treated like `run` for
 /// top-level triggers (there is no attempt yet at trigger time).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdempotencyScope {
+    #[default]
     Run,
     Attempt,
     Global,
-}
-
-impl Default for IdempotencyScope {
-    fn default() -> Self {
-        IdempotencyScope::Run
-    }
 }
 
 impl IdempotencyScope {

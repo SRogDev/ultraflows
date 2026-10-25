@@ -895,6 +895,18 @@ impl Store for SqliteStore {
         }
         Ok(true)
     }
+
+    async fn touch_worker(&self, worker_id: &str, now_ms: i64) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO workers (id, last_seen) VALUES (?, ?)
+             ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen",
+        )
+        .bind(worker_id)
+        .bind(now_ms)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
