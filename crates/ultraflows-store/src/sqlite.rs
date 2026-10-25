@@ -1,12 +1,11 @@
 use crate::error::StoreError;
-use crate::traits::Store;
 use chrono::{DateTime, TimeZone, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite};
-use ultraflows_core::types::{NewRun, Run, RunEvent, RunId, RunStatus, StepRecord, WaitRecord};
+use ultraflows_core::types::{Run, RunStatus};
 use uuid::Uuid;
 
-const SCHEMA: &str = "
+pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     workflow TEXT NOT NULL,
@@ -22,8 +21,54 @@ CREATE TABLE IF NOT EXISTS runs (
     wait_kind TEXT,
     wait_token TEXT,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
+    concurrency_key TEXT,
+    tags TEXT NOT NULL DEFAULT '[]',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    parent_run_id TEXT,
+    parent_wait_key TEXT,
+    schedule_id TEXT,
+    ttl_at INTEGER,
+    source_run_id TEXT,
+    leased_by TEXT,
+    lease_expires_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    version_hash TEXT NOT NULL,
+    retry_json TEXT NOT NULL,
+    concurrency_total INTEGER,
+    concurrency_per_key INTEGER,
+    queue TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS schedules (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    cron TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    external_id TEXT,
+    deduplication_key TEXT,
+    payload TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    next_fire_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_dedup
+    ON schedules(deduplication_key) WHERE deduplication_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    scope TEXT NOT NULL,
+    key TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, key)
+);
+CREATE TABLE IF NOT EXISTS workers (
+    id TEXT PRIMARY KEY,
+    last_seen INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS steps (
     run_id TEXT NOT NULL,
@@ -58,37 +103,41 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 ";
 
-fn ms(dt: DateTime<Utc>) -> i64 {
+pub(crate) fn ms(dt: DateTime<Utc>) -> i64 {
     dt.timestamp_millis()
 }
 
-fn dt(v: Option<i64>) -> Option<DateTime<Utc>> {
+pub(crate) fn dt(v: Option<i64>) -> Option<DateTime<Utc>> {
     v.and_then(|m| Utc.timestamp_millis_opt(m).single())
 }
 
-fn status(s: &str) -> RunStatus {
+pub(crate) fn status(s: &str) -> RunStatus {
     match s {
         "Pending" => RunStatus::Pending,
+        "PendingVersion" => RunStatus::PendingVersion,
         "Running" => RunStatus::Running,
         "Waiting" => RunStatus::Waiting,
         "Completed" => RunStatus::Completed,
         "Failed" => RunStatus::Failed,
+        "Expired" => RunStatus::Expired,
         _ => RunStatus::Cancelled,
     }
 }
 
-fn status_str(s: RunStatus) -> &'static str {
+pub(crate) fn status_str(s: RunStatus) -> &'static str {
     match s {
         RunStatus::Pending => "Pending",
+        RunStatus::PendingVersion => "PendingVersion",
         RunStatus::Running => "Running",
         RunStatus::Waiting => "Waiting",
         RunStatus::Completed => "Completed",
         RunStatus::Failed => "Failed",
         RunStatus::Cancelled => "Cancelled",
+        RunStatus::Expired => "Expired",
     }
 }
 
-fn run_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<Run, StoreError> {
+pub(crate) fn run_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<Run, StoreError> {
     Ok(Run {
         id: Uuid::parse_str(r.try_get("id")?)
             .map_err(|e| StoreError::InvalidUuid(e.to_string()))?,
@@ -108,6 +157,34 @@ fn run_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<Run, StoreError> {
         wait_kind: r.try_get("wait_kind")?,
         wait_token: r.try_get("wait_token")?,
         cancel_requested: r.try_get::<i64, _>("cancel_requested")? != 0,
+        concurrency_key: r.try_get("concurrency_key").ok().flatten(),
+        tags: serde_json::from_str(
+            r.try_get::<Option<String>, _>("tags")?
+                .as_deref()
+                .unwrap_or("[]"),
+        )
+        .unwrap_or_default(),
+        metadata: serde_json::from_str(
+            r.try_get::<Option<String>, _>("metadata")?
+                .as_deref()
+                .unwrap_or("{}"),
+        )
+        .unwrap_or(serde_json::json!({})),
+        parent_run_id: r
+            .try_get::<Option<String>, _>("parent_run_id")
+            .ok()
+            .flatten()
+            .and_then(|v| Uuid::parse_str(&v).ok()),
+        parent_wait_key: r.try_get("parent_wait_key").ok().flatten(),
+        schedule_id: r.try_get("schedule_id").ok().flatten(),
+        ttl_at: dt(r.try_get("ttl_at").ok().flatten()),
+        source_run_id: r
+            .try_get::<Option<String>, _>("source_run_id")
+            .ok()
+            .flatten()
+            .and_then(|v| Uuid::parse_str(&v).ok()),
+        leased_by: r.try_get("leased_by").ok().flatten(),
+        lease_expires_at: dt(r.try_get("lease_expires_at").ok().flatten()),
         created_at: dt(Some(r.try_get::<i64, _>("created_at")?)).unwrap_or_else(Utc::now),
         updated_at: dt(Some(r.try_get::<i64, _>("updated_at")?)).unwrap_or_else(Utc::now),
     })
@@ -144,350 +221,11 @@ impl SqliteStore {
     }
 }
 
-impl Store for SqliteStore {
-    async fn migrate(&self) -> Result<(), StoreError> {
-        sqlx::query(SCHEMA).execute(&self.pool).await?;
-        Ok(())
-    }
-
-    async fn create_run(&self, input: NewRun) -> Result<Run, StoreError> {
-        let now = Utc::now();
-        let run = Run {
-            id: Uuid::now_v7(),
-            workflow: input.workflow,
-            payload: input.payload,
-            output: None,
-            error: None,
-            status: RunStatus::Pending,
-            attempt: 0,
-            max_attempts: input.max_attempts,
-            next_attempt_at: None,
-            wake_at: None,
-            wait_key: None,
-            wait_kind: None,
-            wait_token: None,
-            cancel_requested: false,
-            created_at: now,
-            updated_at: now,
-        };
-        sqlx::query(
-            "INSERT INTO runs (id, workflow, payload, status, attempt, max_attempts,
-             cancel_requested, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-        )
-        .bind(run.id.to_string())
-        .bind(&run.workflow)
-        .bind(serde_json::to_string(&run.payload)?)
-        .bind(status_str(run.status))
-        .bind(run.attempt as i64)
-        .bind(run.max_attempts as i64)
-        .bind(ms(now))
-        .bind(ms(now))
-        .execute(&self.pool)
-        .await?;
-        Ok(run)
-    }
-
-    async fn get_run(&self, id: RunId) -> Result<Option<Run>, StoreError> {
-        let row = sqlx::query("SELECT * FROM runs WHERE id = ?")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
-        match row {
-            Some(r) => Ok(Some(run_from_row(&r)?)),
-            None => Ok(None),
-        }
-    }
-
-    async fn list_runs(&self) -> Result<Vec<Run>, StoreError> {
-        let rows = sqlx::query("SELECT * FROM runs ORDER BY created_at DESC")
-            .fetch_all(&self.pool)
-            .await?;
-        rows.iter().map(run_from_row).collect()
-    }
-
-    async fn claim_due(&self, now_ms: i64) -> Result<Option<Run>, StoreError> {
-        let mut tx = self.pool.begin().await?;
-        let row = sqlx::query(
-            "SELECT * FROM runs WHERE
-               (status = 'Pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
-               OR (status = 'Waiting' AND wake_at IS NOT NULL AND wake_at <= ?)
-             ORDER BY created_at ASC LIMIT 1",
-        )
-        .bind(now_ms)
-        .bind(now_ms)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(row) = row else {
-            tx.rollback().await?;
-            return Ok(None);
-        };
-        let mut run = run_from_row(&row)?;
-        run.status = RunStatus::Running;
-        run.attempt += 1;
-        run.updated_at = Utc::now();
-        sqlx::query("UPDATE runs SET status = 'Running', attempt = ?, updated_at = ? WHERE id = ?")
-            .bind(run.attempt as i64)
-            .bind(ms(run.updated_at))
-            .bind(run.id.to_string())
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(Some(run))
-    }
-
-    async fn update_run(&self, run: &Run) -> Result<(), StoreError> {
-        let n = sqlx::query(
-            "UPDATE runs SET status = ?, output = ?, error = ?, attempt = ?,
-             next_attempt_at = ?, wake_at = ?, wait_key = ?, wait_kind = ?,
-             wait_token = ?, cancel_requested = ?, updated_at = ? WHERE id = ?",
-        )
-        .bind(status_str(run.status))
-        .bind(run.output.as_ref().map(serde_json::to_string).transpose()?)
-        .bind(&run.error)
-        .bind(run.attempt as i64)
-        .bind(run.next_attempt_at.map(ms))
-        .bind(run.wake_at.map(ms))
-        .bind(&run.wait_key)
-        .bind(&run.wait_kind)
-        .bind(&run.wait_token)
-        .bind(i64::from(run.cancel_requested))
-        .bind(ms(run.updated_at))
-        .bind(run.id.to_string())
-        .execute(&self.pool)
-        .await?;
-        if n.rows_affected() == 0 {
-            return Err(StoreError::NotFound(run.id));
-        }
-        Ok(())
-    }
-
-    async fn record_step(&self, record: &StepRecord) -> Result<bool, StoreError> {
-        let n = sqlx::query(
-            "INSERT OR IGNORE INTO steps (run_id, key, result, idempotency_key, created_at)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(record.run_id.to_string())
-        .bind(&record.key)
-        .bind(serde_json::to_string(&record.result)?)
-        .bind(&record.idempotency_key)
-        .bind(ms(Utc::now()))
-        .execute(&self.pool)
-        .await?;
-        Ok(n.rows_affected() == 1)
-    }
-
-    async fn get_step(&self, run_id: RunId, key: &str) -> Result<Option<StepRecord>, StoreError> {
-        let row = sqlx::query("SELECT * FROM steps WHERE run_id = ? AND key = ?")
-            .bind(run_id.to_string())
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(match row {
-            Some(r) => Some(StepRecord {
-                run_id,
-                key: r.try_get("key")?,
-                result: serde_json::from_str(r.try_get::<&str, _>("result")?)?,
-                idempotency_key: r.try_get("idempotency_key")?,
-            }),
-            None => None,
-        })
-    }
-
-    async fn list_steps(&self, run_id: RunId) -> Result<Vec<StepRecord>, StoreError> {
-        let rows = sqlx::query("SELECT * FROM steps WHERE run_id = ? ORDER BY created_at ASC")
-            .bind(run_id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
-        rows.iter()
-            .map(|r| {
-                Ok(StepRecord {
-                    run_id,
-                    key: r.try_get("key")?,
-                    result: serde_json::from_str(r.try_get::<&str, _>("result")?)?,
-                    idempotency_key: r.try_get("idempotency_key")?,
-                })
-            })
-            .collect()
-    }
-
-    async fn append_event(
-        &self,
-        run_id: RunId,
-        kind: &str,
-        payload: serde_json::Value,
-    ) -> Result<RunEvent, StoreError> {
-        let mut tx = self.pool.begin().await?;
-        let seq: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) FROM events WHERE run_id = ?")
-                .bind(run_id.to_string())
-                .fetch_one(&mut *tx)
-                .await?;
-        let seq = seq + 1;
-        let created_at = Utc::now();
-        sqlx::query(
-            "INSERT INTO events (run_id, seq, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(run_id.to_string())
-        .bind(seq)
-        .bind(kind)
-        .bind(serde_json::to_string(&payload)?)
-        .bind(ms(created_at))
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(RunEvent {
-            run_id,
-            seq,
-            kind: kind.to_string(),
-            payload,
-            created_at,
-        })
-    }
-
-    async fn list_events(&self, run_id: RunId) -> Result<Vec<RunEvent>, StoreError> {
-        let rows = sqlx::query("SELECT * FROM events WHERE run_id = ? ORDER BY seq ASC")
-            .bind(run_id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
-        rows.iter()
-            .map(|r| {
-                Ok(RunEvent {
-                    run_id,
-                    seq: r.try_get("seq")?,
-                    kind: r.try_get("kind")?,
-                    payload: serde_json::from_str(r.try_get::<&str, _>("payload")?)?,
-                    created_at: dt(Some(r.try_get::<i64, _>("created_at")?))
-                        .unwrap_or_else(Utc::now),
-                })
-            })
-            .collect()
-    }
-
-    async fn upsert_wait(&self, wait: &WaitRecord) -> Result<(), StoreError> {
-        sqlx::query(
-            "INSERT INTO waits (run_id, key, kind, token, wake_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(run_id, key) DO UPDATE SET kind = excluded.kind,
-               token = excluded.token, wake_at = excluded.wake_at",
-        )
-        .bind(wait.run_id.to_string())
-        .bind(&wait.key)
-        .bind(&wait.kind)
-        .bind(&wait.token)
-        .bind(wait.wake_at.map(ms))
-        .bind(ms(Utc::now()))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn get_wait(&self, run_id: RunId, key: &str) -> Result<Option<WaitRecord>, StoreError> {
-        let row = sqlx::query("SELECT * FROM waits WHERE run_id = ? AND key = ?")
-            .bind(run_id.to_string())
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(match row {
-            Some(r) => Some(WaitRecord {
-                run_id,
-                key: r.try_get("key")?,
-                kind: r.try_get("kind")?,
-                token: r.try_get("token")?,
-                wake_at: dt(r.try_get("wake_at")?),
-            }),
-            None => None,
-        })
-    }
-
-    async fn resolve_wait(&self, run_id: RunId, key: &str) -> Result<(), StoreError> {
-        sqlx::query("DELETE FROM waits WHERE run_id = ? AND key = ?")
-            .bind(run_id.to_string())
-            .bind(key)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    async fn get_approval(&self, token: &str) -> Result<Option<serde_json::Value>, StoreError> {
-        let row = sqlx::query("SELECT result FROM approvals WHERE token = ?")
-            .bind(token)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(match row {
-            Some(r) => Some(serde_json::from_str(r.try_get::<&str, _>("result")?)?),
-            None => None,
-        })
-    }
-
-    async fn record_approval(
-        &self,
-        token: &str,
-        result: serde_json::Value,
-        now_ms: i64,
-    ) -> Result<Vec<Uuid>, StoreError> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO approvals (token, result, created_at) VALUES (?, ?, ?)
-             ON CONFLICT(token) DO UPDATE SET result = excluded.result",
-        )
-        .bind(token)
-        .bind(serde_json::to_string(&result)?)
-        .bind(now_ms)
-        .execute(&mut *tx)
-        .await?;
-        let rows = sqlx::query(
-            "SELECT id FROM runs WHERE status = 'Waiting' AND wait_kind = 'approval' AND wait_token = ?",
-        )
-        .bind(token)
-        .fetch_all(&mut *tx)
-        .await?;
-        let mut ids = Vec::new();
-        for r in rows {
-            let id = Uuid::parse_str(r.try_get("id")?)
-                .map_err(|e| StoreError::InvalidUuid(e.to_string()))?;
-            sqlx::query(
-                "UPDATE runs SET status = 'Pending', next_attempt_at = ?, updated_at = ? WHERE id = ?",
-            )
-            .bind(now_ms)
-            .bind(now_ms)
-            .bind(id.to_string())
-            .execute(&mut *tx)
-            .await?;
-            ids.push(id);
-        }
-        tx.commit().await?;
-        Ok(ids)
-    }
-
-    async fn request_cancel(&self, id: RunId) -> Result<bool, StoreError> {
-        let Some(run) = self.get_run(id).await? else {
-            return Ok(false);
-        };
-        match run.status {
-            RunStatus::Pending | RunStatus::Waiting => {
-                sqlx::query("UPDATE runs SET status = 'Cancelled', updated_at = ? WHERE id = ?")
-                    .bind(ms(Utc::now()))
-                    .bind(id.to_string())
-                    .execute(&self.pool)
-                    .await?;
-            }
-            RunStatus::Running => {
-                sqlx::query("UPDATE runs SET cancel_requested = 1, updated_at = ? WHERE id = ?")
-                    .bind(ms(Utc::now()))
-                    .bind(id.to_string())
-                    .execute(&self.pool)
-                    .await?;
-            }
-            _ => {}
-        }
-        Ok(true)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ultraflows_core::types::NewRun;
+    use crate::traits::Store;
+    use ultraflows_core::types::{NewRun, StepRecord};
 
     async fn store() -> SqliteStore {
         let s = SqliteStore::connect_memory().await.unwrap();
@@ -499,11 +237,7 @@ mod tests {
     async fn step_record_is_insert_once_first_result_wins() {
         let s = store().await;
         let run = s
-            .create_run(NewRun {
-                workflow: "demo".to_string(),
-                payload: serde_json::json!({}),
-                max_attempts: 3,
-            })
+            .create_run(NewRun::new("demo", serde_json::json!({}), 3))
             .await
             .unwrap();
         let rec = StepRecord {
@@ -524,11 +258,7 @@ mod tests {
     async fn events_have_gapless_sequence_numbers() {
         let s = store().await;
         let run = s
-            .create_run(NewRun {
-                workflow: "demo".to_string(),
-                payload: serde_json::json!({}),
-                max_attempts: 3,
-            })
+            .create_run(NewRun::new("demo", serde_json::json!({}), 3))
             .await
             .unwrap();
         for kind in ["Created", "AttemptStarted", "Completed"] {
@@ -547,11 +277,7 @@ mod tests {
     async fn claim_due_only_claims_due_runs_and_increments_attempt() {
         let s = store().await;
         let run = s
-            .create_run(NewRun {
-                workflow: "demo".to_string(),
-                payload: serde_json::json!({}),
-                max_attempts: 3,
-            })
+            .create_run(NewRun::new("demo", serde_json::json!({}), 3))
             .await
             .unwrap();
         let claimed = s

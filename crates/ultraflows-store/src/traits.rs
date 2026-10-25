@@ -1,5 +1,8 @@
 use crate::error::StoreError;
-use ultraflows_core::types::{NewRun, Run, RunEvent, RunId, StepRecord, WaitRecord};
+use ultraflows_core::types::{
+    IdempotencyScope, NewRun, Run, RunEvent, RunId, Schedule, StepRecord, TaskDefinition,
+    WaitRecord,
+};
 use uuid::Uuid;
 
 /// The storage contract (ADR-0003). The runtime's correctness rules may
@@ -51,4 +54,63 @@ pub trait Store: Send + Sync + Clone + 'static {
     /// Running runs get `cancel_requested` set (observed at the next
     /// step boundary). Returns true when the run existed.
     async fn request_cancel(&self, id: RunId) -> Result<bool, StoreError>;
+
+    // ---- Task registry ----
+    async fn upsert_task(&self, task: &TaskDefinition) -> Result<(), StoreError>;
+    async fn get_task(&self, id: &str) -> Result<Option<TaskDefinition>, StoreError>;
+    async fn list_tasks(&self) -> Result<Vec<TaskDefinition>, StoreError>;
+
+    // ---- Idempotent trigger ----
+    /// Create a run under an idempotency key, atomically. Returns the
+    /// run and whether this call created it (false = the key already
+    /// existed and the original run is returned).
+    async fn create_run_idempotent(
+        &self,
+        input: NewRun,
+        scope: IdempotencyScope,
+        key: &str,
+        expires_at_ms: i64,
+    ) -> Result<(Run, bool), StoreError>;
+
+    // ---- Filtered listing / leasing ----
+    async fn list_runs_filtered(
+        &self,
+        status: Option<&str>,
+        task: Option<&str>,
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
+    ) -> Result<Vec<Run>, StoreError>;
+    /// Due runs (Pending claimable, or Waiting timer due), oldest first.
+    async fn list_due(&self, now_ms: i64) -> Result<Vec<Run>, StoreError>;
+    /// Atomically claim one specific run for a remote worker (lease).
+    /// Returns the claimed run (with attempt incremented and lease set),
+    /// or None if the run was no longer claimable.
+    async fn claim_specific(
+        &self,
+        run_id: RunId,
+        worker_id: &str,
+        now_ms: i64,
+    ) -> Result<Option<Run>, StoreError>;
+    async fn count_running_total(&self, task_id: &str) -> Result<u32, StoreError>;
+    async fn count_running_for_key(&self, task_id: &str, key: &str) -> Result<u32, StoreError>;
+    /// Expire Pending, never-started runs past their TTL. Returns ids.
+    async fn expire_ttl(&self, now_ms: i64) -> Result<Vec<Uuid>, StoreError>;
+    /// Promote PendingVersion runs of a newly registered task to Pending.
+    async fn promote_pending_version(&self, task_id: &str) -> Result<Vec<Uuid>, StoreError>;
+    /// Mark a Running run as Waiting (remote worker suspending on a wait).
+    async fn suspend_run(&self, run_id: RunId) -> Result<bool, StoreError>;
+    /// Wake parents waiting on a child run (triggerAndWait). Returns ids.
+    async fn wake_child_parents(
+        &self,
+        child_id: RunId,
+        now_ms: i64,
+    ) -> Result<Vec<Uuid>, StoreError>;
+
+    // ---- Schedules ----
+    async fn create_schedule(&self, schedule: &Schedule) -> Result<(), StoreError>;
+    async fn upsert_schedule_by_dedup(&self, schedule: &Schedule) -> Result<Schedule, StoreError>;
+    async fn get_schedule(&self, id: &str) -> Result<Option<Schedule>, StoreError>;
+    async fn list_schedules(&self) -> Result<Vec<Schedule>, StoreError>;
+    async fn update_schedule(&self, schedule: &Schedule) -> Result<(), StoreError>;
+    async fn delete_schedule(&self, id: &str) -> Result<bool, StoreError>;
 }

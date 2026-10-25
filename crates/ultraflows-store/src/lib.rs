@@ -10,6 +10,7 @@
 
 pub mod error;
 pub mod sqlite;
+pub mod sqlite_ext;
 pub mod traits;
 
 pub use error::StoreError;
