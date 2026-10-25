@@ -13,3 +13,8 @@ ultraflows-store = { path = "../ultraflows-store" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true

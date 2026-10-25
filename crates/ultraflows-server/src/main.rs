@@ -1,11 +1,24 @@
-//! UltraFlows server — scaffold entry point (Phase 0).
+//! UltraFlows server — service-first (ADR-0002).
 //!
-//! Decision D2 (ADR-0002): UltraFlows is **service-first** — one binary
-//! hosting the API, the scheduler and the worker gateway, built on top of
-//! the `ultraflows` runtime library and the pure `ultraflows-core`.
+//! One binary: HTTP API + scheduler + worker loop, over the `ultraflows`
+//! runtime and a SQLite store. Run it with:
 //!
-//! No server behavior is implemented yet: this entry point only proves the
-//! binary builds, initializes tracing, and exits honestly.
+//! ```sh
+//! ULTRAFLOW_DB=ultraflows.db PORT=3000 cargo run --bin ultraflows-server
+//! ```
+//!
+//! Then see `scripts/demo.sh` for a full end-to-end demonstration,
+//! including a `kill -9` restart while a run waits on a human approval.
+
+mod api;
+mod workflows;
+
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::signal;
+use ultraflows::Executor;
+use ultraflows_core::RetryPolicy;
+use ultraflows_store::{SqliteStore, Store};
 
 #[tokio::main]
 async fn main() {
@@ -16,8 +29,47 @@ async fn main() {
         )
         .init();
 
+    let db_path = std::env::var("ULTRAFLOW_DB").unwrap_or_else(|_| "ultraflows.db".to_string());
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3000);
+    // sqlx SQLite URLs: "sqlite:ultraflows.db" creates the file.
+    let url = if db_path.starts_with("sqlite:") {
+        db_path
+    } else {
+        format!("sqlite:{db_path}?mode=rwc")
+    };
+    let store = SqliteStore::connect(&url).await.expect("open database");
+    store.migrate().await.expect("migrate database");
+
+    let executor = Executor::new(store, workflows::registry(), RetryPolicy::default());
+    let state = Arc::new(api::AppState {
+        executor: executor.clone(),
+    });
+
+    // The worker loop: single worker in this binary (v0.1.0). Remote
+    // workers over a worker protocol are a later phase.
+    let worker = executor.clone();
+    tokio::spawn(async move {
+        worker.drive(Duration::from_millis(100)).await;
+    });
+
+    let app = api::router(state);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .expect("bind address");
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        "ultraflows-server scaffold (Phase 0): no runtime implemented yet"
+        port,
+        workflows = ?workflows::names(),
+        "ultraflows-server listening on 127.0.0.1 (local only, no auth in v0.1.0)"
     );
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = signal::ctrl_c().await;
+            tracing::info!("shutting down");
+        })
+        .await
+        .expect("serve");
 }
