@@ -1,15 +1,17 @@
 //! `ultraflows-store` — persistence for UltraFlows.
 //!
 //! Decision D3 (ADR-0003, option C): storage sits behind a `Store` trait
-//! with several backends from day one:
-//!
-//! - **PostgreSQL** — the real backend for the service (decision D2).
-//! - **SQLite** — tests and zero-infrastructure local development.
-//! - **In-memory** — fast unit tests of the runtime's logic.
+//! with several backends. v0.1.0 implements the trait for SQLite (the
+//! demo/production backend of this release); PostgreSQL is the next
+//! backend to implement against the same trait, not a claim made here.
 //!
 //! The trait is the contract; which backend is "real" must be invisible
-//! to the runtime's correctness rules. Dialect differences that leak
-//! through the trait are bugs to record in the ADR, not to normalize
-//! silently.
-//!
-//! Status: scaffold only (Phase 0). No storage behavior is implemented yet.
+//! to the runtime's correctness rules.
+
+pub mod error;
+pub mod sqlite;
+pub mod traits;
+
+pub use error::StoreError;
+pub use sqlite::SqliteStore;
+pub use traits::Store;
