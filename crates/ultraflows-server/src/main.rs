@@ -13,10 +13,9 @@
 //! demonstration, including a `kill -9` restart while a run waits on
 //! a human approval.
 
-mod api;
-
 use std::time::Duration;
 use tokio::signal;
+use ultraflows_server::api;
 use ultraflows_store::{SqliteStore, Store};
 
 #[tokio::main]

@@ -486,7 +486,26 @@ impl RemoteCtx {
         }
     }
 
+    /// A timer wait that already fired is a no-op on re-execution:
+    /// the run is only re-leased once its wake time passed, so
+    /// re-suspending on the same key would loop forever.
+    async fn timer_elapsed(&self, key: &str) -> Result<bool> {
+        let Some(wait) = self.client.get_wait(self.run_id, key).await? else {
+            return Ok(false);
+        };
+        let Some(wake) = wait.get("wake_at").and_then(|v| v.as_str()) else {
+            return Ok(false);
+        };
+        let wake_at = DateTime::parse_from_rfc3339(wake)
+            .map(|d| d.with_timezone(&Utc))
+            .map_err(|e| SdkError::Serde(e.to_string()))?;
+        Ok(wake_at <= Utc::now())
+    }
+
     pub async fn sleep(&self, key: &str, duration: Duration) -> std::result::Result<(), SdkError> {
+        if self.timer_elapsed(key).await? {
+            return Ok(());
+        }
         let wake_at = Utc::now() + chrono::Duration::from_std(duration).unwrap_or_default();
         Err(self.suspend(key, "timer", Some(wake_at), None).await)
     }
@@ -496,6 +515,9 @@ impl RemoteCtx {
         key: &str,
         when: DateTime<Utc>,
     ) -> std::result::Result<(), SdkError> {
+        if self.timer_elapsed(key).await? {
+            return Ok(());
+        }
         Err(self.suspend(key, "timer", Some(when), None).await)
     }
 
@@ -531,11 +553,12 @@ impl RemoteCtx {
                 let child_id =
                     Uuid::parse_str(child_id).map_err(|e| SdkError::Serde(e.to_string()))?;
                 let child = self.client.get_run(child_id).await?;
+                // Server serializes RunStatus SCREAMING_SNAKE_CASE.
                 match child.status.as_str() {
-                    "Completed" => {
+                    "COMPLETED" => {
                         return Ok(child.output.unwrap_or(serde_json::json!({})));
                     }
-                    "Failed" | "Cancelled" | "Expired" => {
+                    "FAILED" | "CANCELLED" | "EXPIRED" => {
                         return Err(SdkError::Failed(format!(
                             "child run {} ended as {}",
                             child_id, child.status
