@@ -9,6 +9,9 @@ pub fn can_transition(from: RunStatus, to: RunStatus) -> bool {
         (from, to),
         (Pending, Running)
             | (Pending, Cancelled)
+            | (Pending, Expired)
+            | (PendingVersion, Pending)
+            | (PendingVersion, Cancelled)
             | (Running, Waiting)
             | (Running, Completed)
             | (Running, Failed)
@@ -35,8 +38,17 @@ mod tests {
 
     #[test]
     fn terminal_states_have_no_outgoing_transitions() {
-        for from in [Completed, Failed, Cancelled] {
-            for to in [Pending, Running, Waiting, Completed, Failed, Cancelled] {
+        for from in [Completed, Failed, Cancelled, Expired] {
+            for to in [
+                Pending,
+                PendingVersion,
+                Running,
+                Waiting,
+                Completed,
+                Failed,
+                Cancelled,
+                Expired,
+            ] {
                 assert!(!can_transition(from, to), "{from:?} -> {to:?}");
             }
         }
@@ -53,6 +65,11 @@ mod tests {
         assert!(can_transition(Pending, Cancelled));
         assert!(can_transition(Waiting, Cancelled));
         assert!(can_transition(Running, Cancelled));
+        assert!(can_transition(PendingVersion, Pending));
+        assert!(can_transition(PendingVersion, Cancelled));
+        assert!(can_transition(Pending, Expired));
+        assert!(!can_transition(PendingVersion, Running));
+        assert!(!can_transition(Pending, PendingVersion));
     }
 
     #[test]

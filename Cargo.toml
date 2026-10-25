@@ -5,6 +5,8 @@ members = [
     "crates/ultraflows-store",
     "crates/ultraflows",
     "crates/ultraflows-server",
+    "crates/ultraflows-sdk",
+    "crates/ultraflows-demo-app",
 ]
 
 [workspace.package]
@@ -50,6 +52,20 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 # Property-based testing (dev only): invariants over the state machine.
 proptest = "1"
+# Cron parsing for schedules (Trigger-shaped 5-field cron). Evaluated
+# 2026-10-25: `croner` 4 mishandles the spring-forward DST gap (a daily
+# 09:00 America/Havana schedule jumped to 01:00 on the transition day);
+# the `cron` crate passes both spring-forward and fall-back probes.
+# Limitation: `cron` rejects Trigger's `L` (last-day) syntax — schedules
+# using L are rejected with a clear error until a later increment.
+cron = "0.15"
+# IANA timezones for schedules (DST-correct via chrono-tz + `cron`).
+chrono-tz = "0.10"
+# HTTP client for the Rust SDK (worker protocol) and the demo app.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 
 [profile.release]
 lto = "thin"

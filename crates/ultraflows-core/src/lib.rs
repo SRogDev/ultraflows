@@ -9,6 +9,7 @@
 
 pub mod error;
 pub mod retry;
+pub mod schedule;
 pub mod state;
 pub mod types;
 
