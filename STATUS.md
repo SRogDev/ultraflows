@@ -28,3 +28,14 @@
 - Phase 1B: server + Postgres + minimal worker protocol.
 - First publication (2026-10-24): public on GitHub as SRogDev/ultraflows
   under the Elastic License 2.0 — ADR-0006 decided (license + name).
+
+## Done (v0.1.0, 2026-10-25)
+
+- Functional single-node runtime: core state machine + retry policy,
+  SQLite Store, journaled-step replay, timer + approval waits, retries,
+  cancellation, event log, axum HTTP API, in-process worker, 3 demo
+  workflows. **11/11 tests pass**; fmt + clippy -D warnings green.
+- Demo: `scripts/demo.sh` — approval wait, `kill -9` + restart,
+  resume without re-executing steps, flaky retries, timer wake.
+- ADR-0008 records the portfolio scope and its limits honestly
+  (Postgres, remote workers, lease expiry, auth, schedules: not yet).

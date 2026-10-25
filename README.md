@@ -13,10 +13,56 @@ result* is durable — the runtime never assumes it is deterministic.
 
 ## Status
 
-**Phase 0 — scaffold only.** The repository layout, stack and development
-workflow exist. **No runtime behavior is implemented yet**, and nothing in
-this repository is durable, reliable or fast until the tests and
-benchmarks in `TESTING.md` prove it, phase by phase.
+**v0.1.0 — working single-node demo runtime.** Trigger workflows over
+HTTP, journaled steps with replay, timer waits, human-approval
+waitpoints, retries with backoff, cancellation and an append-only event
+log — all on SQLite, with 11 tests and a `kill -9` restart demo. See
+"Limitations" below and `docs/adr/0008-portfolio-v010-scope.md` for
+exactly what is *not* implemented yet. Nothing here is claimed durable,
+reliable or fast beyond what the tests and the demo prove.
+
+## For recruiters (30 seconds)
+
+UltraFlows is a Temporal-shaped durable workflow runtime in Rust:
+workflow code is deterministic, side effects live in steps, and a run's
+event history lets it survive crashes and long waits. The demo proves
+the core claim end-to-end: start a run, kill the server with `kill -9`
+while it waits on a human approval, restart it, approve, and watch it
+complete — with earlier steps replayed from the journal, never
+re-executed.
+
+## Quickstart
+
+```bash
+# Run the full demo (server, approval wait, kill -9, restart, retries, timer)
+bash scripts/demo.sh
+
+# Or run the server yourself
+ULTRAFLOW_DB=ultraflows.db PORT=3000 cargo run --bin ultraflows-server
+curl -s localhost:3000/health
+curl -s -X POST localhost:3000/v1/runs -H 'content-type: application/json' \
+  -d '{"workflow":"client-onboarding","payload":{"company":"Acme"}}'
+curl -s -X POST localhost:3000/v1/approvals/onboarding:Acme \
+  -H 'content-type: application/json' -d '{"result":{"approved":true}}'
+```
+
+Workflows available in v0.1.0: `client-onboarding` (steps + approval
+wait), `flaky-report` (retries), `delayed-reminder` (timer wait).
+API: `POST /v1/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`,
+`GET /v1/runs/{id}/events`, `GET /v1/runs/{id}/steps`,
+`POST /v1/runs/{id}/cancel`, `POST /v1/approvals/{token}`.
+
+## Limitations (v0.1.0, stated plainly)
+
+- Single node, single in-process worker; SQLite only (PostgreSQL is a
+  trait away, not implemented yet).
+- No authentication — bind is localhost-only by default; do not expose
+  it to an untrusted network.
+- No schedules/cron, no remote workers, no multi-tenancy yet.
+- Crash recovery proven for Waiting/Pending runs; a run that is
+  Running at kill time needs lease expiry (next increment) to be
+  reclaimed automatically.
+- No performance claims: no benchmark has been run yet.
 
 ## Concepts (kept distinct on purpose)
 
@@ -47,8 +93,9 @@ crates/
 docs/adr/             architecture decision records
 ```
 
-Runnable examples arrive with Phase 1 and a benchmark harness when
-there is something real to measure — neither exists yet.
+Runnable demos live in `scripts/demo.sh` and in the server's
+`workflows.rs`. A benchmark harness arrives when there is something
+real to measure — no numbers are quoted before then.
 
 ## Development
 

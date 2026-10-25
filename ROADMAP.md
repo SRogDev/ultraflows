@@ -15,6 +15,11 @@ the code merely exists. The system must stay working at every phase.
 
 ## Phase 1 — Minimal durable core (service form, single node)
 
+**v0.1.0 DONE (2026-10-25, portfolio scope — see ADR-0008):** the core
+slice + service shell over SQLite with an in-process worker, 11 tests
+and the kill-restart demo. Remaining Phase 1 work: lease expiry +
+Running-run recovery, PostgreSQL backend, remote worker protocol.
+
 Decisions D1–D4 (ADRs 0001–0004): Temporal-style replay, service-first,
 Store trait (Postgres real), code-first Rust definitions. Built in two
 steps so the system works at each: **1A** core slice (types, journal,
