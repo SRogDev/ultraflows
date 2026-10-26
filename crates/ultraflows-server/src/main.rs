@@ -7,6 +7,8 @@
 //!
 //! ```sh
 //! ULTRAFLOW_DB=ultraflows.db PORT=3000 cargo run --bin ultraflows-server
+//! # or, with a real PostgreSQL backend (see docs/POSTGRES.md):
+//! ULTRAFLOW_DATABASE_URL=postgres://user:pass@127.0.0.1:5432/ultraflows PORT=3000 cargo run --bin ultraflows-server
 //! ```
 //!
 //! Then see `scripts/trigger-demo.sh` for a full end-to-end
@@ -16,7 +18,7 @@
 use std::time::Duration;
 use tokio::signal;
 use ultraflows_server::api;
-use ultraflows_store::{SqliteStore, Store};
+use ultraflows_store::{AnyStore, PostgresStore, SqliteStore, Store};
 
 #[tokio::main]
 async fn main() {
@@ -27,19 +29,44 @@ async fn main() {
         )
         .init();
 
-    let db_path = std::env::var("ULTRAFLOW_DB").unwrap_or_else(|_| "ultraflows.db".to_string());
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(3000);
-    // sqlx SQLite URLs: "sqlite:ultraflows.db" creates the file.
-    let url = if db_path.starts_with("sqlite:") {
-        db_path
-    } else {
-        format!("sqlite:{db_path}?mode=rwc")
+    // Backend selection (docs/POSTGRES.md): a postgres:// or
+    // postgresql:// URL in ULTRAFLOW_DATABASE_URL (preferred) or
+    // ULTRAFLOW_DB selects PostgreSQL; anything else is the SQLite
+    // path/URL behaviour from v0.1.0, unchanged. Default stays SQLite.
+    let pg_url = std::env::var("ULTRAFLOW_DATABASE_URL")
+        .ok()
+        .filter(|u| u.starts_with("postgres://") || u.starts_with("postgresql://"))
+        .or_else(|| {
+            std::env::var("ULTRAFLOW_DB")
+                .ok()
+                .filter(|u| u.starts_with("postgres://") || u.starts_with("postgresql://"))
+        });
+    let store: AnyStore = match pg_url {
+        Some(url) => {
+            let pg = PostgresStore::connect(&url)
+                .await
+                .expect("open postgres database");
+            pg.migrate().await.expect("migrate database");
+            AnyStore::postgres(pg)
+        }
+        None => {
+            let db_path =
+                std::env::var("ULTRAFLOW_DB").unwrap_or_else(|_| "ultraflows.db".to_string());
+            // sqlx SQLite URLs: "sqlite:ultraflows.db" creates the file.
+            let url = if db_path.starts_with("sqlite:") {
+                db_path
+            } else {
+                format!("sqlite:{db_path}?mode=rwc")
+            };
+            let sqlite = SqliteStore::connect(&url).await.expect("open database");
+            sqlite.migrate().await.expect("migrate database");
+            AnyStore::sqlite(sqlite)
+        }
     };
-    let store = SqliteStore::connect(&url).await.expect("open database");
-    store.migrate().await.expect("migrate database");
 
     // Scheduler loop: TTL expiry + cron schedule firing, every second.
     // Timer waits need no waking here: a Waiting run whose wake time

@@ -8,11 +8,16 @@
 //! The trait is the contract; which backend is "real" must be invisible
 //! to the runtime's correctness rules.
 
+pub mod backend;
 pub mod error;
+pub mod postgres;
+pub mod postgres_ext;
 pub mod sqlite;
 pub mod sqlite_ext;
 pub mod traits;
 
+pub use backend::AnyStore;
 pub use error::StoreError;
+pub use postgres::PostgresStore;
 pub use sqlite::SqliteStore;
 pub use traits::Store;

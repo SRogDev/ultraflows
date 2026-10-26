@@ -46,7 +46,7 @@ use ultraflows_core::types::{
     WaitRecord,
 };
 use ultraflows_core::{RetryPolicy, next_fire};
-use ultraflows_store::{SqliteStore, Store};
+use ultraflows_store::{AnyStore, Store};
 use uuid::Uuid;
 
 pub const LEASE_MS: i64 = 30_000;
@@ -55,7 +55,7 @@ pub const BATCH_MAX: usize = 100;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub store: SqliteStore,
+    pub store: AnyStore,
 }
 
 type ApiResult<T> = Result<Json<T>, (StatusCode, String)>;
@@ -88,7 +88,7 @@ pub struct TriggerOptions {
 /// An unregistered task yields a PendingVersion run: visible, never
 /// executed, promoted to Pending when the task registers.
 pub async fn trigger_task(
-    store: &SqliteStore,
+    store: &AnyStore,
     task_id: &str,
     opts: TriggerOptions,
     schedule_id: Option<String>,
@@ -1105,7 +1105,7 @@ pub fn router(state: AppState) -> Router {
 /// schedules. A schedule fire creates one run per fire time and
 /// advances `next_fire_at` from the fired time (not from now), so a
 /// slow tick does not silently skip or duplicate fires.
-pub async fn scheduler_tick(store: &SqliteStore) -> Result<Vec<Uuid>, String> {
+pub async fn scheduler_tick(store: &AnyStore) -> Result<Vec<Uuid>, String> {
     let now = Utc::now();
     let _ = store
         .expire_ttl(now.timestamp_millis())

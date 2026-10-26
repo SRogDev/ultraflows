@@ -5,17 +5,17 @@
 use serde_json::json;
 use std::time::Duration;
 use ultraflows_server::api;
-use ultraflows_store::{SqliteStore, Store};
+use ultraflows_store::{AnyStore, SqliteStore, Store};
 
 async fn spawn_server() -> (String, tokio::task::JoinHandle<()>) {
     let store = SqliteStore::connect_memory().await.unwrap();
     store.migrate().await.unwrap();
     let app = api::router(api::AppState {
-        store: store.clone(),
+        store: AnyStore::sqlite(store.clone()),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let sched = store.clone();
+    let sched = AnyStore::sqlite(store.clone());
     tokio::spawn(async move {
         loop {
             let _ = api::scheduler_tick(&sched).await;
