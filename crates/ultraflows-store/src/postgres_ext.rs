@@ -52,7 +52,7 @@ fn insert_run_sql() -> &'static str {
      next_attempt_at, cancel_requested, concurrency_key, tags, metadata,
      parent_run_id, parent_wait_key, schedule_id, ttl_at, source_run_id,
      created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
+     VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, FALSE, $8, $9::jsonb, $10::jsonb, $11, $12, $13, $14, $15, $16, $17)"
 }
 
 impl Store for PostgresStore {
@@ -93,6 +93,7 @@ impl Store for PostgresStore {
         };
         sqlx::query(insert_run_sql())
             .bind(run.id)
+            .bind(&run.workflow)
             .bind(Json(&run.payload))
             .bind(status_str(run.status))
             .bind(0i32)
@@ -166,10 +167,10 @@ impl Store for PostgresStore {
 
     async fn update_run(&self, run: &Run) -> Result<(), StoreError> {
         let n = sqlx::query(
-            "UPDATE runs SET status = $1, output = $2, error = $3, attempt = $4,
+            "UPDATE runs SET status = $1, output = $2::jsonb, error = $3, attempt = $4,
              next_attempt_at = $5, wake_at = $6, wait_key = $7, wait_kind = $8,
              wait_token = $9, cancel_requested = $10, concurrency_key = $11,
-             tags = $12, metadata = $13, ttl_at = $14, leased_by = $15,
+             tags = $12::jsonb, metadata = $13::jsonb, ttl_at = $14, leased_by = $15,
              lease_expires_at = $16, updated_at = $17 WHERE id = $18",
         )
         .bind(status_str(run.status))
@@ -201,7 +202,7 @@ impl Store for PostgresStore {
     async fn record_step(&self, record: &StepRecord) -> Result<bool, StoreError> {
         let n = sqlx::query(
             "INSERT INTO steps (run_id, key, result, idempotency_key, created_at)
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+             VALUES ($1, $2, $3::jsonb, $4, $5) ON CONFLICT DO NOTHING",
         )
         .bind(record.run_id)
         .bind(&record.key)
@@ -268,7 +269,7 @@ impl Store for PostgresStore {
         let created_at = Utc::now();
         sqlx::query(
             "INSERT INTO events (run_id, seq, kind, payload, created_at)
-             VALUES ($1, $2, $3, $4, $5)",
+             VALUES ($1, $2, $3, $4::jsonb, $5)",
         )
         .bind(run_id)
         .bind(seq)
@@ -370,7 +371,7 @@ impl Store for PostgresStore {
     ) -> Result<Vec<Uuid>, StoreError> {
         let mut tx = self.pool().begin().await?;
         sqlx::query(
-            "INSERT INTO approvals (token, result, created_at) VALUES ($1, $2, $3)
+            "INSERT INTO approvals (token, result, created_at) VALUES ($1, $2::jsonb, $3)
              ON CONFLICT (token) DO UPDATE SET result = EXCLUDED.result",
         )
         .bind(token)
@@ -445,7 +446,7 @@ impl Store for PostgresStore {
         sqlx::query(
             "INSERT INTO tasks (id, version_hash, retry_json, concurrency_total,
              concurrency_per_key, queue, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)
              ON CONFLICT (id) DO UPDATE SET version_hash = EXCLUDED.version_hash,
                retry_json = EXCLUDED.retry_json,
                concurrency_total = EXCLUDED.concurrency_total,
@@ -551,6 +552,7 @@ impl Store for PostgresStore {
         };
         sqlx::query(insert_run_sql())
             .bind(run.id)
+            .bind(&run.workflow)
             .bind(Json(&run.payload))
             .bind(status_str(run.status))
             .bind(0i32)
@@ -803,7 +805,7 @@ impl Store for PostgresStore {
         sqlx::query(
             "INSERT INTO schedules (id, task_id, cron, timezone, external_id,
              deduplication_key, payload, enabled, next_fire_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)",
         )
         .bind(&schedule.id)
         .bind(&schedule.task_id)
@@ -866,7 +868,7 @@ impl Store for PostgresStore {
     async fn update_schedule(&self, schedule: &Schedule) -> Result<(), StoreError> {
         let n = sqlx::query(
             "UPDATE schedules SET task_id = $1, cron = $2, timezone = $3, external_id = $4,
-             deduplication_key = $5, payload = $6, enabled = $7, next_fire_at = $8,
+             deduplication_key = $5, payload = $6::jsonb, enabled = $7, next_fire_at = $8,
              updated_at = $9 WHERE id = $10",
         )
         .bind(&schedule.task_id)
