@@ -186,6 +186,16 @@ impl PostgresStore {
         Ok(Self { pool })
     }
 
+    pub async fn connect_with(
+        options: sqlx::postgres::PgConnectOptions,
+    ) -> Result<Self, StoreError> {
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(options)
+            .await?;
+        Ok(Self { pool })
+    }
+
     pub fn pool(&self) -> &Pool<Postgres> {
         &self.pool
     }
@@ -199,17 +209,33 @@ pub(crate) mod tests {
 
     /// Live-Postgres store, or None when no test URL is configured.
     /// Env: ULTRAFLOW_TEST_DATABASE_URL, falling back to DATABASE_URL.
-    /// Point it at a FRESH dedicated test database (see
-    /// docs/POSTGRES.md): the tests run in parallel in one binary and
-    /// therefore assert only on runs/schedules they create themselves
-    /// (never on global counts), so truncating here would delete a
-    /// sibling test's data mid-flight. The conformance test's few
-    /// scoped counts (task-a, its own schedule) assume a fresh DB.
+    /// Each test gets its OWN freshly created database
+    /// (`uf_test_<uuid>`), because `claim_due` and the conformance
+    /// counts are global within a database: sharing one DB across
+    /// parallel tests (or across runs, via leftover rows) made
+    /// `claim_due` claim a sibling test's run instead of its own.
+    /// The per-test databases are small and are left behind; drop
+    /// them with `DROP DATABASE uf_test_%` style cleanup (see
+    /// docs/POSTGRES.md) when they accumulate.
     pub(crate) async fn pg_store() -> Option<PostgresStore> {
+        use sqlx::postgres::PgConnectOptions;
+        use std::str::FromStr;
         let url = std::env::var("ULTRAFLOW_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .ok()?;
-        let s = PostgresStore::connect(&url).await.ok()?;
+        let base = PgConnectOptions::from_str(&url).ok()?;
+        let db = format!("uf_test_{}", uuid::Uuid::now_v7().simple());
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(base.clone().database("postgres"))
+            .await
+            .ok()?;
+        sqlx::query(&format!("CREATE DATABASE \"{db}\""))
+            .execute(&admin)
+            .await
+            .ok()?;
+        drop(admin);
+        let s = PostgresStore::connect_with(base.database(&db)).await.ok()?;
         s.migrate().await.ok()?;
         Some(s)
     }

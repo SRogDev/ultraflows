@@ -28,9 +28,36 @@
   `scripts/demo.sh` forwards to it. v0.1.0 in-process workflows and
   `POST /v1/runs` removed. Commits on local main only (no push).
 
+## Done (Postgres + Python SDK, 2026-10-25, ADR-0010)
+
+- **Postgres real** (not just the trait): `PostgresStore` with the
+  same invariants as SQLite (insert-once steps, gapless events via
+  `event_counters`, `SELECT ... FOR UPDATE SKIP LOCKED` claims,
+  advisory-lock idempotent triggers, JSONB payloads, same JSON
+  shape). Backend chosen by `ULTRAFLOW_DATABASE_URL` /
+  `postgres://` `ULTRAFLOW_DB`; SQLite stays the default. Tested
+  against live PostgreSQL 16.15 installed on this VM; store tests
+  create one fresh database per test (`uf_test_<uuid>`) after an
+  earlier shared-DB version failed on `claim_due` races.
+  `scripts/trigger-demo-pg.sh` 15/15 on live Postgres.
+- **SDK Python** (`sdk-python/`, uv project, package `ultraflows`):
+  synchronous `Client` / `Worker` / `RemoteCtx` mirroring the Rust
+  SDK protocol exactly (same endpoints, snake_case JSON,
+  `SCREAMING_SNAKE_CASE` statuses), `httpx` with `urllib` fallback,
+  23 pytest tests + ruff clean, live integration demo against the
+  real Rust server ALL PASS, and a FastAPI + LangGraph example
+  (endpoint triggers and returns run id; LangGraph graph inside a
+  worker task with nodes wrapped in `ctx.step()`). Sync only — no
+  `AsyncClient` yet (FastAPI uses `asyncio.to_thread`).
+- Workspace totals after both increments: **29 Rust tests** (core 9,
+  store 13, runtime 4, server smoke 3) + **23 Python tests**;
+  fmt + clippy `-D warnings` green; SQLite demo 18/18, Postgres
+  demo 15/15, Python integration demo ALL PASS. Commits on local
+  main only (no push).
+
 ## Doing
 
-- Final quality gates + report for the Trigger-core increment.
+- Consolidated docs + interview PDF for the full increment.
 
 ## Next
 

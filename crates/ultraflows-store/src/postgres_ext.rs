@@ -904,9 +904,9 @@ mod tests {
     use crate::postgres::tests::pg_store;
     use ultraflows_core::RetryPolicy;
 
-    /// All Postgres conformance checks in ONE test function: the tests
-    /// share one test database (truncated by `pg_store`), so running
-    /// them as separate parallel tests would interfere with each other.
+    /// All Postgres conformance checks in ONE test function, for
+    /// readability (each test gets its own fresh database from
+    /// `pg_store`, so parallel tests no longer interfere).
     /// Skips (passes) when no test URL is configured.
     #[tokio::test]
     async fn pg_conformance() {

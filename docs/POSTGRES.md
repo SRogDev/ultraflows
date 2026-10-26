@@ -120,8 +120,9 @@ dedup, waits, approval, worker heartbeat, PendingVersion promotion,
 list_due). They run against a LIVE Postgres:
 
 ```sh
-# Fresh dedicated test database first (drop + create):
-su postgres -c "psql -c 'DROP DATABASE ultraflows_test;' -c 'CREATE DATABASE ultraflows_test OWNER ultraflows;'"
+# The URL below is only the template: each test creates its OWN
+# database (uf_test_<uuid>) from it, so no drop/create ritual is
+# needed before a run, and repeated runs stay green.
 ULTRAFLOW_TEST_DATABASE_URL=postgres://ultraflows:ultraflows@127.0.0.1:5432/ultraflows_test \
   cargo test -p ultraflows-store pg_
 # DATABASE_URL is accepted as a fallback if ULTRAFLOW_TEST_DATABASE_URL is unset.
@@ -132,11 +133,16 @@ Two behaviours are deliberate, not accidents:
 - **Skip, don't fail, without a URL.** If neither env var is set,
   each Postgres test returns early and passes, so `cargo test
   --workspace` stays green on machines without Postgres.
-- **No truncation, fresh DB instead.** The store tests run in
-  parallel in one test binary and share the test database, so each
-  test asserts only on runs/schedules it created itself. Truncating
-  inside a test would delete a sibling test's data mid-flight. Point
-  the tests at a fresh database (drop/create above) instead.
+- **One fresh database per test, not a shared one.** An earlier
+  version shared one test database across parallel tests, and
+  `claim_due` (global within a database) claimed a sibling test's
+  run instead of its own — plus leftover rows made repeat runs
+  fail. `pg_store()` now creates `uf_test_<uuid>` per test and
+  migrates it, so tests are isolated in parallel and across runs.
+  Those databases are small and left behind; clean them up with
+  `psql -c "SELECT 'DROP DATABASE \"' || datname || '\";' FROM
+  pg_database WHERE datname LIKE 'uf_test\_%' ESCAPE '\'"` (review
+  the output before running it) when they accumulate.
 
 ## Demo on PostgreSQL
 

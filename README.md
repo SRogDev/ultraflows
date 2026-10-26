@@ -20,13 +20,18 @@ trigger runs over HTTP, and work them as remote workers via the
 approval-token / child-run waits (`triggerAndWait`), retries from the
 task's policy, concurrency caps at claim time, cron schedules with
 IANA timezones, idempotent triggers, TTL + delay + reschedule, and an
-append-only event log — all on SQLite, with 25 tests and an 18-proof
-end-to-end demo (`scripts/trigger-demo.sh`, including `kill -9` +
-restart + resume without re-executing steps). See "Limitations" below
-and `docs/adr/0009-trigger-core-scope.md` for exactly what is *not*
-implemented yet. Nothing here is claimed durable, reliable or fast
-beyond what the tests and the demo prove. This is Trigger-*shaped*,
-not wire-compatible with Trigger.dev's hosted API.
+append-only event log — on SQLite (default) or real PostgreSQL 16
+(`ULTRAFLOW_DATABASE_URL`), with 29 tests, an 18-proof end-to-end
+demo (`scripts/trigger-demo.sh`, including `kill -9` + restart +
+resume without re-executing steps) and a 15-proof Postgres demo
+(`scripts/trigger-demo-pg.sh`). Python apps call it through
+`sdk-python/` (Client + Worker + RemoteCtx, incl. a FastAPI +
+LangGraph example). See "Limitations" below and
+`docs/adr/0009-trigger-core-scope.md` (plus ADR-0010 for Postgres
+and the Python SDK) for exactly what is *not* implemented yet.
+Nothing here is claimed durable, reliable or fast beyond what the
+tests and the demos prove. This is Trigger-*shaped*, not
+wire-compatible with Trigger.dev's hosted API.
 
 ## For recruiters (30 seconds)
 
@@ -48,6 +53,10 @@ bash scripts/trigger-demo.sh
 
 # Or run the server yourself (localhost-only, no auth)
 ULTRAFLOW_DB=ultraflows.db PORT=3000 cargo run --bin ultraflows-server
+# On Postgres instead (see docs/POSTGRES.md for setup):
+ULTRAFLOW_DATABASE_URL=postgres://ultraflows:ultraflows@127.0.0.1:5432/ultraflows_demo PORT=3000 cargo run --bin ultraflows-server
+# Python worker (see sdk-python/README.md):
+cd sdk-python && uv run python scripts/integration_demo.py
 curl -s localhost:3000/health
 # In another terminal: register + work demo tasks, then trigger one
 ULTRAFLOWS_URL=http://127.0.0.1:3000 cargo run --bin ultraflows-demo-app -- worker &
@@ -67,9 +76,10 @@ worker protocol under `/v1/workers/...`. Full surface:
 
 ## Limitations (stated plainly)
 
-- Single node; SQLite only (PostgreSQL is a trait away, not
-  implemented yet). Own protocol — NOT wire-compatible with
-  Trigger.dev's hosted API.
+- Single node; SQLite (default) or PostgreSQL via
+  `ULTRAFLOW_DATABASE_URL` (pool 5, untuned; two servers sharing one
+  database can double-fire a schedule — no leader election yet).
+  Own protocol — NOT wire-compatible with Trigger.dev's hosted API.
 - No authentication — bind is localhost-only; do not expose it to
   an untrusted network.
 - No declarative (code-defined) schedules, no batch waitpoints, no
@@ -104,9 +114,10 @@ worker protocol under `/v1/workers/...`. Full surface:
 ```text
 crates/
   ultraflows-core/    pure types, state machine, invariants (no Tokio, no I/O)
-  ultraflows-store/   Store trait + SQLite backend (Postgres: trait only)
+  ultraflows-store/   Store trait + SQLite and PostgreSQL backends
   ultraflows/         runtime library: embedded Ctx/Executor (kept for library use)
   ultraflows-sdk/     Rust SDK: Client (trigger) + Worker + RemoteCtx (remote tasks)
+  sdk-python/         Python SDK (same protocol) + FastAPI/LangGraph example
   ultraflows-demo-app/ external demo app (registers + triggers + works tasks)
   ultraflows-server/  the service binary (Trigger-shaped API + scheduler loop)
 docs/adr/             architecture decision records

@@ -86,6 +86,8 @@ Remote-worker runtime replacing the v0.1.0 in-process demo: task
 registry, Trigger-shaped API, lease protocol + Rust SDK, external
 demo app, cron schedules (DST-tested), idempotent triggers, TTL /
 delay / reschedule, concurrency caps at claim time. 25 tests +
-18-proof demo script green. Remaining Phase 1 work: Postgres backend,
+18-proof demo script green. 2026-10-25 follow-up (ADR-0010):
+Postgres backend DONE (live PG 16.15, 15-proof demo) and Python SDK
+DONE (FastAPI + LangGraph example). Remaining Phase 1 work:
 declarative schedules, batch waitpoints, webhook waiters (in that
 order of runtime value).
